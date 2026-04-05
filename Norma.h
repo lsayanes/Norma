@@ -7,6 +7,7 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QSplitter>
+#include <QPlainTextEdit>
 #include <QString>
 #include <QStringList>
 #include <string>
@@ -24,6 +25,10 @@ public:
     bool create(const std::string &title);
     int  deleteJunk(const QString &pathIn, const QString &pathOut);
 
+private:
+    void output(const QString &msg);
+
+
 private slots:
     void applyTransformation();
 
@@ -32,4 +37,6 @@ private:
     FilePanel       *m_destPanel;
     QPushButton     *m_transformBtn;
     QSplitter       *m_splitter;
+    QPlainTextEdit  *m_log;
+
 };

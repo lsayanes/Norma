@@ -7,8 +7,10 @@
 #include <QFileInfo>
 #include <QFileIconProvider>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QSplitter>
 #include <QFrame>
+#include <QApplication>
 
 
 Norma::Norma(QWidget *parent)
@@ -17,6 +19,7 @@ Norma::Norma(QWidget *parent)
     , m_destPanel(nullptr)
     , m_transformBtn(nullptr)
     , m_splitter(nullptr)
+    , m_log(nullptr)
 {
 }
 
@@ -44,6 +47,14 @@ bool Norma::create(const std::string &title)
     m_splitter->addWidget(m_destPanel);
     m_splitter->setSizes({500, 500});
     mainLayout->addWidget(m_splitter, 1);
+
+    // ── output log ──
+    m_log = new QPlainTextEdit(central);
+    m_log->setReadOnly(true);
+    m_log->setFixedHeight(120);
+    m_log->setFont(QFont("Courier", 10));
+    m_log->setPlaceholderText("Output...");
+    mainLayout->addWidget(m_log);
 
     m_transformBtn = new QPushButton("▶  Normalize for HD24", central);
     m_transformBtn->setFixedHeight(36);
@@ -114,6 +125,12 @@ int Norma::deleteJunk(const QString &pathIn, const QString &pathOut)
 }
 
 
+void Norma::output(const QString &msg)
+{
+    m_log->appendPlainText(msg);
+    QApplication::processEvents();   
+}
+
 void Norma::applyTransformation()
 {
     auto pairs = m_sourcePanel->selectedFilesWithNames();
@@ -125,32 +142,46 @@ void Norma::applyTransformation()
 
     QString dest = m_destPanel->currentPath();
 
-    QStringList errors;
-    QStringList done;
+    m_log->clear();
+    output("=== Normalize for HD24 ===");
+    output(QString("Destination: %1").arg(dest));
+    output(QString("Files: %1").arg(pairs.size()));
+    output("─────────────────────────────────────");
+
+    int nOk = 0;
+    int nFail = 0;
 
     for (const auto &pair : pairs)
     {
         const QString &srcPath  = pair.first;
-        const QString &destName = pair.second;     // e.g. "Track05"
-        QString destPath = dest + "/" + destName + ".wav";
+        const QString &destName = pair.second;
+        const QString  destPath = dest + "/" + destName + ".wav";
+        const QString  srcName  = QFileInfo(srcPath).fileName();
 
-        // Si ya existe el destino, lo elimino primero
+        output(QString("[>] %1  →  %2").arg(srcName, destName + ".wav"));
+
         if (QFile::exists(destPath))
+        {
             QFile::remove(destPath);
-    
-        if (0 == deleteJunk(srcPath, destPath))
-            done << destName + ".wav";
+            output("    existing file removed");
+        }
+
+        const int result = deleteJunk(srcPath, destPath);
+        if (result == 0)
+        {
+            const qint64 sizeKB = QFileInfo(destPath).size() / 1024;
+            output(QString("    OK  (%1 KB)").arg(sizeKB));
+            ++nOk;
+        }
         else
-            errors << QFileInfo(srcPath).fileName() + " → " + destName + ".wav";
+        {
+            output(QString("    FAILED (error %1)").arg(result));
+            ++nFail;
+        }
     }
 
-    QString msg;
-    if (!done.isEmpty())
-        msg += "Copied:\n" + done.join("\n");
-    if (!errors.isEmpty())
-        msg += "\n\nFailed:\n" + errors.join("\n");
+    output("─────────────────────────────────────");
+    output(QString("Done: %1 OK, %2 failed.").arg(nOk).arg(nFail));
 
-    QMessageBox::information(this, "Result", msg.trimmed());
-
-    m_destPanel->setPath(dest); // refresh destination panel
+    m_destPanel->setPath(dest);
 }

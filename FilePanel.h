@@ -27,6 +27,8 @@ public:
 
     // Solo válido cuando selectable=true
     QStringList selectedFiles() const;   // rutas completas de los archivos marcados
+    // Retorna pares (rutaCompleta, nombreDestino) para los archivos marcados con track asignado
+    QList<QPair<QString,QString>> selectedFilesWithNames() const;
     void        selectAll();
     void        selectNone();
 
@@ -37,6 +39,7 @@ private slots:
     void onGoUp();
     void onItemDoubleClicked(QListWidgetItem *item);
     void onPathCommitted();
+    void onShowContextMenu(const QPoint &pos);
 
 private:
     void populate();

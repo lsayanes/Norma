@@ -22,6 +22,7 @@ public:
     ~Norma();
 
     bool create(const std::string &title);
+    int  deleteJunk(const QString &pathIn, const QString &pathOut);
 
 private slots:
     void applyTransformation();

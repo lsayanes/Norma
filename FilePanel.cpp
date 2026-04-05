@@ -1,7 +1,10 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QFileIconProvider>
+#include <QMenu>
+#include <QAction>
 
 #include "FilePanel.h"
 
@@ -34,6 +37,7 @@ FilePanel::FilePanel(const QString &title, bool selectable, QWidget *parent)
 
     m_list = new QListWidget(this);
     m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     root->addWidget(m_list, 1);
 
     if (m_selectable) 
@@ -49,9 +53,10 @@ FilePanel::FilePanel(const QString &title, bool selectable, QWidget *parent)
         connect(m_selNoneBtn, &QPushButton::clicked, this, &FilePanel::selectNone);
     }
 
-    connect(m_upBtn,   &QPushButton::clicked,            this, &FilePanel::onGoUp);
-    connect(m_pathEdit, &QLineEdit::returnPressed,        this, &FilePanel::onPathCommitted);
-    connect(m_list,    &QListWidget::itemDoubleClicked,   this, &FilePanel::onItemDoubleClicked);
+    connect(m_upBtn,    &QPushButton::clicked,                        this, &FilePanel::onGoUp);
+    connect(m_pathEdit, &QLineEdit::returnPressed,                    this, &FilePanel::onPathCommitted);
+    connect(m_list,     &QListWidget::itemDoubleClicked,              this, &FilePanel::onItemDoubleClicked);
+    connect(m_list,     &QListWidget::customContextMenuRequested,     this, &FilePanel::onShowContextMenu);
 
     populate();
 }
@@ -109,6 +114,66 @@ void FilePanel::selectNone()
 }
 
 
+QList<QPair<QString,QString>> FilePanel::selectedFilesWithNames() const
+{
+    QList<QPair<QString,QString>> result;
+    for (int i = 0; i < m_list->count(); ++i)
+    {
+        QListWidgetItem *item = m_list->item(i);
+        if (item->checkState() != Qt::Checked)
+            continue;
+        QFileInfo fi(m_currentPath + "/" + item->data(Qt::UserRole).toString());
+        if (!fi.isFile())
+            continue;
+        QString trackName = item->data(Qt::UserRole + 1).toString();
+        if (trackName.isEmpty())
+            trackName = fi.baseName(); // fallback: nombre original sin extensión
+        result << QPair<QString,QString>(fi.absoluteFilePath(), trackName);
+    }
+    return result;
+}
+
+void FilePanel::onShowContextMenu(const QPoint &pos)
+{
+    // Solo en el panel de origen (selectable)
+    if (!m_selectable) return;
+
+    QListWidgetItem *item = m_list->itemAt(pos);
+    if (!item) return;
+
+    // Solo archivos, no directorios
+    QFileInfo fi(m_currentPath + "/" + item->data(Qt::UserRole).toString());
+    if (!fi.isFile()) return;
+
+    QMenu menu(this);
+    menu.setTitle("Assign track name");
+
+    for (int t = 1; t <= 24; ++t)
+    {
+        QString trackName = QString("Track%1").arg(t, 2, 10, QChar('0'));
+        QAction *action = menu.addAction(trackName);
+        connect(action, &QAction::triggered, this, [this, item, trackName]() {
+            item->setData(Qt::UserRole + 1, trackName);
+            // Mostrar en la lista: "filename.wav → Track05"
+            QString fileName = item->data(Qt::UserRole).toString();
+            item->setText(fileName + "  →  " + trackName);
+            // Marcar el checkbox automáticamente
+            if (item->flags() & Qt::ItemIsUserCheckable)
+                item->setCheckState(Qt::Checked);
+        });
+    }
+
+    // Opción para limpiar la asignación
+    menu.addSeparator();
+    QAction *clearAction = menu.addAction("Clear assignment");
+    connect(clearAction, &QAction::triggered, this, [this, item]() {
+        item->setData(Qt::UserRole + 1, QString());
+        item->setText(item->data(Qt::UserRole).toString());
+    });
+
+    menu.exec(m_list->viewport()->mapToGlobal(pos));
+}
+
 void FilePanel::onGoUp()
 {
     QDir dir(m_currentPath);
@@ -134,22 +199,29 @@ void FilePanel::populate()
 {
     m_list->clear();
 
-    QDir dir(m_currentPath);
-    dir.setFilter(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
-    dir.setSorting(QDir::DirsFirst | QDir::Name | QDir::IgnoreCase);
-
     QFileIconProvider iconProvider;
+    QDir dir(m_currentPath);
 
-    for (const QFileInfo &fi : dir.entryInfoList()) 
+    // Directorios primero (sin ocultos)
+    dir.setFilter(QDir::Dirs | QDir::NoDotAndDotDot);
+    dir.setSorting(QDir::Name | QDir::IgnoreCase);
+    for (const QFileInfo &fi : dir.entryInfoList())
     {
-        auto *item = new QListWidgetItem(
-            iconProvider.icon(fi),
-            fi.isDir() ? "[" + fi.fileName() + "]" : fi.fileName()
-        );
-    
+        auto *item = new QListWidgetItem(iconProvider.icon(fi), "[" + fi.fileName() + "]");
+        item->setData(Qt::UserRole, fi.fileName());
+        m_list->addItem(item);
+    }
+
+    // Solo archivos .wav (sin ocultos)
+    dir.setFilter(QDir::Files | QDir::NoDotAndDotDot);
+    dir.setNameFilters({"*.wav", "*.WAV"});
+    dir.setSorting(QDir::Name | QDir::IgnoreCase);
+    for (const QFileInfo &fi : dir.entryInfoList())
+    {
+        auto *item = new QListWidgetItem(iconProvider.icon(fi), fi.fileName());
         item->setData(Qt::UserRole, fi.fileName());
 
-        if (m_selectable && fi.isFile()) 
+        if (m_selectable)
         {
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             item->setCheckState(Qt::Unchecked);

@@ -65,6 +65,10 @@ make -j$(nproc)
 5. Click **▶ Normalize for HD24**
 6. The output log shows each file processed and the final summary
 
+![alt text](./Norma1.png)
+
+![alt text](./Norma2.png)
+
 ## Project structure
 
 ```

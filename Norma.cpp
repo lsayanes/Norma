@@ -30,7 +30,6 @@ bool Norma::create(const std::string &title)
     setWindowTitle(title.c_str());
     resize(1024, 640);
 
-    // ── central widget ──
     auto *central = new QWidget(this);
     setCentralWidget(central);
 

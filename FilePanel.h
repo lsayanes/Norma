@@ -12,7 +12,6 @@
 
 
 
-// ─── FilePanel ────────────────────────────────────────────────────────────────
 // Un panel de navegación de archivos estilo Norton Commander.
 // Si selectable=true muestra checkboxes y botones Select All / None.
 class FilePanel : public QWidget

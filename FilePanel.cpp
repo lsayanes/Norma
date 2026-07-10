@@ -3,15 +3,21 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFileIconProvider>
+#include <QInputDialog>
+#include <QMessageBox>
 #include <QMenu>
 #include <QAction>
 
 #include "FilePanel.h"
 
-FilePanel::FilePanel(const QString &title, bool selectable, QWidget *parent)
+FilePanel::FilePanel(const QString &title, bool selectable, QWidget *parent,
+                     bool allowTrackAssignment, bool allowCreateFolder)
     : QWidget(parent)
     , m_selectable(selectable)
+    , m_allowTrackAssignment(allowTrackAssignment)
+    , m_allowCreateFolder(allowCreateFolder)
     , m_currentPath(QDir::homePath())
+    , m_newFolderBtn(nullptr)
     , m_selAllBtn(nullptr)
     , m_selNoneBtn(nullptr)
 {
@@ -33,6 +39,16 @@ FilePanel::FilePanel(const QString &title, bool selectable, QWidget *parent)
     m_pathEdit = new QLineEdit(m_currentPath, this);
     pathBar->addWidget(m_upBtn);
     pathBar->addWidget(m_pathEdit);
+
+    if (m_allowCreateFolder)
+    {
+        m_newFolderBtn = new QPushButton("+", this);
+        m_newFolderBtn->setFixedWidth(28);
+        m_newFolderBtn->setToolTip("New folder");
+        pathBar->addWidget(m_newFolderBtn);
+        connect(m_newFolderBtn, &QPushButton::clicked, this, &FilePanel::onCreateFolder);
+    }
+
     root->addLayout(pathBar);
 
     m_list = new QListWidget(this);
@@ -135,41 +151,50 @@ QList<QPair<QString,QString>> FilePanel::selectedFilesWithNames() const
 
 void FilePanel::onShowContextMenu(const QPoint &pos)
 {
-    // Solo en el panel de origen (selectable)
-    if (!m_selectable) return;
-
-    QListWidgetItem *item = m_list->itemAt(pos);
-    if (!item) return;
-
-    // Solo archivos, no directorios
-    QFileInfo fi(m_currentPath + "/" + item->data(Qt::UserRole).toString());
-    if (!fi.isFile()) return;
-
     QMenu menu(this);
-    menu.setTitle("Assign track name");
 
-    for (int t = 1; t <= 24; ++t)
+    if (m_allowCreateFolder)
     {
-        QString trackName = QString("Track%1").arg(t, 2, 10, QChar('0'));
-        QAction *action = menu.addAction(trackName);
-        connect(action, &QAction::triggered, this, [this, item, trackName]() {
-            item->setData(Qt::UserRole + 1, trackName);
-            // Mostrar en la lista: "filename.wav → Track05"
-            QString fileName = item->data(Qt::UserRole).toString();
-            item->setText(fileName + "  →  " + trackName);
-            // Marcar el checkbox automáticamente
-            if (item->flags() & Qt::ItemIsUserCheckable)
-                item->setCheckState(Qt::Checked);
-        });
+        QAction *newFolderAction = menu.addAction("New folder…");
+        connect(newFolderAction, &QAction::triggered, this, &FilePanel::onCreateFolder);
     }
 
-    // Opción para limpiar la asignación
-    menu.addSeparator();
-    QAction *clearAction = menu.addAction("Clear assignment");
-    connect(clearAction, &QAction::triggered, this, [this, item]() {
-        item->setData(Qt::UserRole + 1, QString());
-        item->setText(item->data(Qt::UserRole).toString());
-    });
+    if (m_allowTrackAssignment)
+    {
+        QListWidgetItem *item = m_list->itemAt(pos);
+        if (item)
+        {
+            QFileInfo fi(m_currentPath + "/" + item->data(Qt::UserRole).toString());
+            if (fi.isFile())
+            {
+                if (!menu.isEmpty())
+                    menu.addSeparator();
+
+                for (int t = 1; t <= 24; ++t)
+                {
+                    QString trackName = QString("Track%1").arg(t, 2, 10, QChar('0'));
+                    QAction *action = menu.addAction(trackName);
+                    connect(action, &QAction::triggered, this, [this, item, trackName]() {
+                        item->setData(Qt::UserRole + 1, trackName);
+                        QString fileName = item->data(Qt::UserRole).toString();
+                        item->setText(fileName + "  →  " + trackName);
+                        if (item->flags() & Qt::ItemIsUserCheckable)
+                            item->setCheckState(Qt::Checked);
+                    });
+                }
+
+                menu.addSeparator();
+                QAction *clearAction = menu.addAction("Clear assignment");
+                connect(clearAction, &QAction::triggered, this, [this, item]() {
+                    item->setData(Qt::UserRole + 1, QString());
+                    item->setText(item->data(Qt::UserRole).toString());
+                });
+            }
+        }
+    }
+
+    if (menu.isEmpty())
+        return;
 
     menu.exec(m_list->viewport()->mapToGlobal(pos));
 }
@@ -179,6 +204,37 @@ void FilePanel::onGoUp()
     QDir dir(m_currentPath);
     if (dir.cdUp())
         setPath(dir.absolutePath());
+}
+
+void FilePanel::onCreateFolder()
+{
+    bool ok = false;
+    const QString name = QInputDialog::getText(
+        this, "New folder", "Folder name:", QLineEdit::Normal, QString(), &ok).trimmed();
+
+    if (!ok || name.isEmpty())
+        return;
+
+    if (name.contains('/') || name.contains('\\') || name == "." || name == "..")
+    {
+        QMessageBox::warning(this, "New folder", "Invalid folder name.");
+        return;
+    }
+
+    QDir dir(m_currentPath);
+    if (dir.exists(name))
+    {
+        QMessageBox::warning(this, "New folder", "A folder with that name already exists.");
+        return;
+    }
+
+    if (!dir.mkdir(name))
+    {
+        QMessageBox::warning(this, "New folder", "Could not create the folder.");
+        return;
+    }
+
+    populate();
 }
 
 void FilePanel::onItemDoubleClicked(QListWidgetItem *item)

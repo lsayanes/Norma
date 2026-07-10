@@ -19,7 +19,8 @@ class FilePanel : public QWidget
     Q_OBJECT
 
 public:
-    explicit FilePanel(const QString &title, bool selectable, QWidget *parent = nullptr);
+    explicit FilePanel(const QString &title, bool selectable, QWidget *parent = nullptr,
+                       bool allowTrackAssignment = true, bool allowCreateFolder = false);
 
     QString     currentPath()   const;
     void        setPath(const QString &path);
@@ -36,6 +37,7 @@ signals:
 
 private slots:
     void onGoUp();
+    void onCreateFolder();
     void onItemDoubleClicked(QListWidgetItem *item);
     void onPathCommitted();
     void onShowContextMenu(const QPoint &pos);
@@ -44,11 +46,14 @@ private:
     void populate();
 
     bool         m_selectable;
+    bool         m_allowTrackAssignment;
+    bool         m_allowCreateFolder;
     QString      m_currentPath;
 
     QLabel      *m_titleLabel;
     QLineEdit   *m_pathEdit;
     QPushButton *m_upBtn;
+    QPushButton *m_newFolderBtn; // nullptr si !allowCreateFolder
     QListWidget *m_list;
     QPushButton *m_selAllBtn;   // nullptr si !selectable
     QPushButton *m_selNoneBtn;  // nullptr si !selectable

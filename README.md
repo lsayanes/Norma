@@ -21,6 +21,7 @@ Norma reads each WAV file, strips the `JUNK` chunk, and writes a clean copy to a
 - **Select All / Select None** buttons for batch processing
 - **Output log** — real-time console showing progress, file sizes, and errors for every processed file
 - **JUNK chunk removal** — preserves all other WAV chunks intact; handles odd-sized chunks with correct 2-byte alignment
+- **FTP upload to HD24** — select normalized WAV files in the destination panel and send them to the recorder over passive FTP
 - Cross-platform: **Linux** and **macOS** (Windows support planned)
 
 ## Requirements
@@ -64,6 +65,9 @@ make -j$(nproc)
 4. In the **Destination** panel, navigate to the target folder (e.g. the HD24 drive)
 5. Click **▶ Normalize for HD24**
 6. The output log shows each file processed and the final summary
+7. Select the normalized files in the **Destination** panel
+8. Enter the HD24 FTP host, user, password, and remote path
+9. Click **⇧ Upload selected to HD24**
 
 ![alt text](./Norma1.png)
 

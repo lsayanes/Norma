@@ -31,11 +31,17 @@ private:
 
 private slots:
     void applyTransformation();
+    void uploadSelectedToHd24();
 
 private:
     FilePanel       *m_sourcePanel;
     FilePanel       *m_destPanel;
     QPushButton     *m_transformBtn;
+    QPushButton     *m_uploadBtn;
+    QLineEdit       *m_ftpHostEdit;
+    QLineEdit       *m_ftpUserEdit;
+    QLineEdit       *m_ftpPasswordEdit;
+    QLineEdit       *m_ftpRemotePathEdit;
     QSplitter       *m_splitter;
     QPlainTextEdit  *m_log;
 

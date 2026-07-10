@@ -462,7 +462,8 @@ void Norma::uploadSelectedToHd24()
         output(QString("[↑] %1  →  %2/%3").arg(fi.fileName(), remotePath, fi.fileName()));
 
         int lastPercent = -1;
-        auto progress = [this, &lastPercent](qint64 sent, qint64 total) {
+        auto progress = [this, &lastPercent](qint64 sent, qint64 total) 
+        {
             const int percent = (total > 0)
                 ? static_cast<int>((sent * 100) / total)
                 : 100;
@@ -475,11 +476,14 @@ void Norma::uploadSelectedToHd24()
                 .arg(total / 1024));
         };
 
-        if (m_ftp->uploadFile(filePath, fi.fileName(), &error, progress)) {
+        if (m_ftp->uploadFile(filePath, fi.fileName(), &error, progress)) 
+        {
             const qint64 sizeKB = fi.size() / 1024;
             output(QString("    OK  (%1 KB)").arg(sizeKB));
             ++nOk;
-        } else {
+        } 
+        else 
+        {
             output("    FAILED: " + error);
             ++nFail;
             if (!m_ftp->isConnected())

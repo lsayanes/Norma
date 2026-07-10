@@ -33,18 +33,23 @@ public:
 
 private:
     static constexpr int kTimeoutMs = 15000;
+    // La HD24 graba lento en disco mecánico: el 226 puede tardar mucho tras cerrar el data socket.
+    static constexpr int kTransferTimeoutMs = 10 * 60 * 1000;
 
     QTcpSocket m_control;
     QString m_buffer;
 
     void close();
     bool command(const QString &commandText, const QList<int> &expectedCodes,
-                 QString *response, QString *error);
-    bool expect(const QList<int> &expectedCodes, QString *response, QString *error);
-    bool readResponse(int *code, QString *response, QString *error);
+                 QString *response, QString *error, int timeoutMs = kTimeoutMs);
+    bool expect(const QList<int> &expectedCodes, QString *response, QString *error,
+                int timeoutMs = kTimeoutMs);
+    bool readResponse(int *code, QString *response, QString *error, int timeoutMs = kTimeoutMs);
     bool enterPassiveMode(QHostAddress *host, quint16 *port, QString *error);
     bool openDataConnection(QTcpSocket *dataSocket, QString *error);
     bool readDataConnection(QTcpSocket *dataSocket, QByteArray *data, QString *error);
+    bool waitUntilBytesToWriteAtMost(QTcpSocket *dataSocket, qint64 maxBuffered,
+                                     int timeoutMs, QString *error);
     void setError(QString *error, const QString &message) const;
     static QList<FtpDirEntry> parseListOutput(const QByteArray &data);
 };

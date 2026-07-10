@@ -185,15 +185,19 @@ void Hd24Panel::populate(const QList<FtpDirEntry> &entries)
             files.append(e);
     }
 
-    auto addEntry = [&](const FtpDirEntry &e) {
+    auto addEntry = [&](const FtpDirEntry &e) 
+    {
         const QString label = e.isDirectory ? ("[" + e.name + "]") : e.name;
         auto *item = new QListWidgetItem(label);
+
         item->setData(Qt::UserRole, e.name);
         item->setData(Qt::UserRole + 1, e.isDirectory);
+
         if (e.isDirectory)
             item->setIcon(style()->standardIcon(QStyle::SP_DirIcon));
         else
             item->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
+
         m_list->addItem(item);
     };
 

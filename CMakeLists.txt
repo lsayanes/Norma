@@ -59,36 +59,65 @@ set(HEADERS
     Norma.h
 )
 
-# Create executable
-add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
+set(APP_ICON "")
+if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/resources/Norma.icns")
+  set(APP_ICON "${CMAKE_SOURCE_DIR}/resources/Norma.icns")
+  set_source_files_properties(${APP_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+endif()
+
+# Create executable (macOS .app bundle when on Apple)
+if(APPLE)
+  add_executable(${PROJECT_NAME} MACOSX_BUNDLE ${SOURCES} ${HEADERS} ${APP_ICON})
+  set_target_properties(${PROJECT_NAME} PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_BUNDLE_NAME "Norma"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.idev.jalagamaes.norma"
+    MACOSX_BUNDLE_BUNDLE_VERSION "1.1"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.1"
+    MACOSX_BUNDLE_LONG_VERSION_STRING "1.1"
+    MACOSX_BUNDLE_COPYRIGHT "Copyright © iDev - JalaGamaes"
+    MACOSX_BUNDLE_INFO_STRING "Norma — WAV normalizer and FTP transfer for Alesis HD24"
+  )
+  if(APP_ICON)
+    set_target_properties(${PROJECT_NAME} PROPERTIES MACOSX_BUNDLE_ICON_FILE "Norma.icns")
+  endif()
+else()
+  add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
+endif()
 
 # Link with Qt
 target_link_libraries(${PROJECT_NAME} Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network)
 
-# Copy resources folder next to the built binary
+# Copy resources next to the binary (or into the .app Resources folder on macOS)
+if(APPLE)
+  set(_norma_resource_dest "$<TARGET_BUNDLE_CONTENT_DIR:${PROJECT_NAME}>/Resources")
+else()
+  set(_norma_resource_dest "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
+endif()
+
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_norma_resource_dest}/resources"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/resources
-            $<TARGET_FILE_DIR:${PROJECT_NAME}>/resources
+            "${_norma_resource_dest}/resources"
 )
 
-# Copy img folder next to the built binary
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/img
-            $<TARGET_FILE_DIR:${PROJECT_NAME}>/img
-)
+if(EXISTS "${CMAKE_SOURCE_DIR}/img")
+  add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              ${CMAKE_SOURCE_DIR}/img
+              "${_norma_resource_dest}/img"
+  )
+endif()
 
 # Install rules (for packaging / cross-deploy)
-install(TARGETS ${PROJECT_NAME}
-    RUNTIME DESTINATION bin
-)
-
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/img
-        DESTINATION share/${PROJECT_NAME})
-
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/resources
-        DESTINATION share/${PROJECT_NAME})
+if(APPLE)
+  install(TARGETS ${PROJECT_NAME} BUNDLE DESTINATION .)
+else()
+  install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
+  install(DIRECTORY ${CMAKE_SOURCE_DIR}/img DESTINATION share/${PROJECT_NAME})
+  install(DIRECTORY ${CMAKE_SOURCE_DIR}/resources DESTINATION share/${PROJECT_NAME})
+endif()
 
 
 

@@ -1,6 +1,7 @@
 #include "FtpClient.h"
 
 #include <QFile>
+#include <QElapsedTimer>
 #include <QRegularExpression>
 #include <QtGlobal>
 
@@ -114,49 +115,95 @@ bool FtpClient::uploadFile(const QString &localPath, const QString &remoteName, 
     }
 
     const qint64 totalBytes = file.size();
-    qint64 sentBytes = 0;
+    qint64 queuedBytes = 0; // bytes aceptados por write() (pueden seguir en buffer local)
 
     QTcpSocket dataSocket;
     if (!openDataConnection(&dataSocket, error))
         return false;
 
+    // Buffer de envío chico: fuerza backpressure TCP cuando la HD24 no da abasto.
+    dataSocket.setSocketOption(QAbstractSocket::SendBufferSizeSocketOption, 16 * 1024);
+    dataSocket.setSocketOption(QAbstractSocket::LowDelayOption, 1);
+
     QString response;
     if (!command("STOR " + remoteName, {125, 150}, &response, error))
         return false;
 
+    auto reportProgress = [&]() {
+        if (!progress)
+            return;
+        // Lo que ya salió del buffer de Qt ≈ más cercano a lo aceptado por la red/HD24.
+        const qint64 confirmed = qMax<qint64>(0, queuedBytes - dataSocket.bytesToWrite());
+        progress(qMin(confirmed, totalBytes), totalBytes);
+    };
+
     if (progress)
         progress(0, totalBytes);
 
-    constexpr qint64 kBufSize = 64 * 1024;
-    while (!file.atEnd()) {
-        const QByteArray chunk = file.read(kBufSize);
+    // Chunks chicos + poco dato en vuelo: la HD24 (disco ~5400 rpm) no se satura.
+    constexpr qint64 kChunkSize = 4 * 1024;
+    constexpr qint64 kMaxInFlight = 8 * 1024;
+
+    while (!file.atEnd())
+    {
+        if (!waitUntilBytesToWriteAtMost(&dataSocket, kMaxInFlight, kTransferTimeoutMs, error))
+            return false;
+        reportProgress();
+
+        const QByteArray chunk = file.read(kChunkSize);
         if (chunk.isEmpty() && file.error() != QFile::NoError) {
             setError(error, QString("Read error in %1").arg(localPath));
             return false;
         }
+        if (chunk.isEmpty())
+            break;
 
         qint64 written = 0;
-        while (written < chunk.size()) {
+        while (written < chunk.size())
+        {
+            if (!waitUntilBytesToWriteAtMost(&dataSocket, kMaxInFlight, kTransferTimeoutMs, error))
+                return false;
+
             const qint64 n = dataSocket.write(chunk.constData() + written, chunk.size() - written);
-            if (n < 0 || !dataSocket.waitForBytesWritten(kTimeoutMs)) {
+            if (n < 0) {
                 setError(error, QString("FTP data write failed (%1)").arg(dataSocket.errorString()));
                 return false;
             }
+            if (n == 0) {
+                // Socket congestionado: esperar a que drene algo.
+                if (!dataSocket.waitForBytesWritten(5000)
+                    && dataSocket.state() != QAbstractSocket::ConnectedState) {
+                    setError(error, QString("FTP data write stalled (%1)").arg(dataSocket.errorString()));
+                    return false;
+                }
+                continue;
+            }
+
             written += n;
-            sentBytes += n;
-            if (progress)
-                progress(sentBytes, totalBytes);
+            queuedBytes += n;
+            reportProgress();
         }
     }
+
+    // Esperar a que salga TODO el buffer local antes de cerrar el data connection.
+    if (!waitUntilBytesToWriteAtMost(&dataSocket, 0, kTransferTimeoutMs, error))
+        return false;
+    reportProgress();
 
     if (progress)
         progress(totalBytes, totalBytes);
 
+    // Cerrar el data socket = EOF del STOR. La HD24 puede seguir grabando un rato.
     dataSocket.disconnectFromHost();
-    if (dataSocket.state() != QAbstractSocket::UnconnectedState)
-        dataSocket.waitForDisconnected(kTimeoutMs);
+    if (dataSocket.state() != QAbstractSocket::UnconnectedState) {
+        if (!dataSocket.waitForDisconnected(kTransferTimeoutMs)) {
+            setError(error, QString("FTP data close timeout (%1)").arg(dataSocket.errorString()));
+            return false;
+        }
+    }
 
-    return expect({226, 250}, &response, error);
+    // El 226 es el verdadero ACK de fin de transferencia del servidor FTP.
+    return expect({226, 250}, &response, error, kTransferTimeoutMs);
 }
 
 void FtpClient::close()
@@ -167,21 +214,22 @@ void FtpClient::close()
 }
 
 bool FtpClient::command(const QString &commandText, const QList<int> &expectedCodes,
-                        QString *response, QString *error)
+                        QString *response, QString *error, int timeoutMs)
 {
     const QByteArray bytes = commandText.toUtf8() + "\r\n";
-    if (m_control.write(bytes) != bytes.size() || !m_control.waitForBytesWritten(kTimeoutMs)) {
+    if (m_control.write(bytes) != bytes.size() || !m_control.waitForBytesWritten(timeoutMs)) {
         setError(error, QString("FTP command failed: %1").arg(commandText));
         return false;
     }
 
-    return expect(expectedCodes, response, error);
+    return expect(expectedCodes, response, error, timeoutMs);
 }
 
-bool FtpClient::expect(const QList<int> &expectedCodes, QString *response, QString *error)
+bool FtpClient::expect(const QList<int> &expectedCodes, QString *response, QString *error,
+                       int timeoutMs)
 {
     int code = 0;
-    if (!readResponse(&code, response, error))
+    if (!readResponse(&code, response, error, timeoutMs))
         return false;
 
     if (!expectedCodes.contains(code)) {
@@ -193,7 +241,7 @@ bool FtpClient::expect(const QList<int> &expectedCodes, QString *response, QStri
     return true;
 }
 
-bool FtpClient::readResponse(int *code, QString *response, QString *error)
+bool FtpClient::readResponse(int *code, QString *response, QString *error, int timeoutMs)
 {
     QStringList lines;
     int firstCode = 0;
@@ -201,12 +249,16 @@ bool FtpClient::readResponse(int *code, QString *response, QString *error)
 
     while (true) {
         const int newlinePos = m_buffer.indexOf('\n');
-        if (newlinePos < 0) {
-            if (!m_control.waitForReadyRead(kTimeoutMs)) {
+        if (newlinePos < 0) 
+        {
+            if (!m_control.waitForReadyRead(timeoutMs)) 
+            {
                 setError(error, QString("FTP response timeout (%1)").arg(m_control.errorString()));
                 return false;
             }
+            
             m_buffer += QString::fromUtf8(m_control.readAll());
+            
             continue;
         }
 
@@ -264,14 +316,17 @@ bool FtpClient::openDataConnection(QTcpSocket *dataSocket, QString *error)
 {
     QHostAddress dataHost;
     quint16 dataPort = 0;
+    
     if (!enterPassiveMode(&dataHost, &dataPort, error))
         return false;
 
     dataSocket->connectToHost(dataHost, dataPort);
-    if (!dataSocket->waitForConnected(kTimeoutMs)) {
+    if (!dataSocket->waitForConnected(kTimeoutMs)) 
+    {
         setError(error, QString("Cannot open FTP data connection (%1)").arg(dataSocket->errorString()));
         return false;
     }
+    
     return true;
 }
 
@@ -297,6 +352,39 @@ bool FtpClient::readDataConnection(QTcpSocket *dataSocket, QByteArray *data, QSt
 
     if (data)
         *data = buffer;
+    return true;
+}
+
+bool FtpClient::waitUntilBytesToWriteAtMost(QTcpSocket *dataSocket, qint64 maxBuffered,
+                                           int timeoutMs, QString *error)
+{
+    QElapsedTimer timer;
+    timer.start();
+
+    while (dataSocket->bytesToWrite() > maxBuffered)
+    {
+        if (dataSocket->state() != QAbstractSocket::ConnectedState) {
+            setError(error, QString("FTP data connection lost (%1)").arg(dataSocket->errorString()));
+            return false;
+        }
+
+        const qint64 remaining = timeoutMs - timer.elapsed();
+        if (remaining <= 0) {
+            setError(error, QString("FTP send buffer drain timeout (%1 bytes still queued)")
+                     .arg(dataSocket->bytesToWrite()));
+            return false;
+        }
+
+        // Esperas cortas: si la HD24 frena el TCP window, bytesToWrite baja de a poco.
+        if (!dataSocket->waitForBytesWritten(static_cast<int>(qMin<qint64>(remaining, 5000)))) {
+            if (dataSocket->state() != QAbstractSocket::ConnectedState) {
+                setError(error, QString("FTP data connection lost (%1)").arg(dataSocket->errorString()));
+                return false;
+            }
+            // Timeout parcial sin progreso fatal: seguir hasta agotar timeout total.
+        }
+    }
+
     return true;
 }
 

@@ -19,11 +19,20 @@ int main(int argc, char *argv[])
 
     app.setStyle(QStyleFactory::create("Fusion"));
 
-    // Icono de aplicacion y dock (debe setearse en QApplication, no en la ventana)
-    const QString iconPath = QApplication::applicationDirPath() + "/resources/Norma.png";
-    if (QFileInfo::exists(iconPath))
-        app.setWindowIcon(QIcon(iconPath));
-
+    // Icono de aplicacion y dock (bundle macOS: Contents/Resources; build local: ./resources)
+    const QStringList iconCandidates = {
+        QApplication::applicationDirPath() + "/../Resources/resources/Norma.png",
+        QApplication::applicationDirPath() + "/../Resources/Norma.png",
+        QApplication::applicationDirPath() + "/resources/Norma.png",
+    };
+    for (const QString &iconPath : iconCandidates)
+    {
+        if (QFileInfo::exists(iconPath))
+        {
+            app.setWindowIcon(QIcon(iconPath));
+            break;
+        }
+    }
     Norma NormaApp;
     bool bCreated = NormaApp.create(appName);
 

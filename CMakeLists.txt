@@ -47,11 +47,15 @@ endif()
 set(SOURCES
     main.cpp
     FilePanel.cpp
+    Hd24Panel.cpp
+    FtpClient.cpp
     Norma.cpp
 )
 
 set(HEADERS
-    FilePanel.h 
+    FilePanel.h
+    Hd24Panel.h
+    FtpClient.h
     Norma.h
 )
 

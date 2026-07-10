@@ -1,4 +1,5 @@
 #include "Norma.h"
+#include "FtpClient.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -6,236 +7,19 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QFileIconProvider>
-#include <QHostAddress>
 #include <QMessageBox>
 #include <QPlainTextEdit>
-#include <QTcpSocket>
 #include <QSplitter>
-#include <QFrame>
 #include <QApplication>
-#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTextStream>
-
-class FtpClient
-{
-public:
-    bool isConnected() const
-    {
-        return m_control.state() == QAbstractSocket::ConnectedState;
-    }
-
-    void disconnectFromServer()
-    {
-        close();
-        m_control.abort();
-        m_buffer.clear();
-    }
-
-public:
-    bool connectToServer(const QString &host, quint16 port, const QString &user, const QString &password, QString *error)
-    {
-        m_control.connectToHost(host, port);
-        if (!m_control.waitForConnected(kTimeoutMs)) {
-            setError(error, QString("Cannot connect to %1:%2 (%3)").arg(host).arg(port).arg(m_control.errorString()));
-            return false;
-        }
-
-        QString response;
-        if (!expect({220}, &response, error))
-            return false;
-
-        const QString ftpUser = user.trimmed().isEmpty() ? "anonymous" : user.trimmed();
-        if (!command("USER " + ftpUser, {230, 331}, &response, error))
-            return false;
-
-        if (response.startsWith("331")) {
-            const QString ftpPassword = password.isEmpty() ? "anonymous@" : password;
-            if (!command("PASS " + ftpPassword, {230, 202}, &response, error))
-                return false;
-        }
-
-        return command("TYPE I", {200}, &response, error);
-    }
-
-    bool cwd(const QString &remotePath, QString *error)
-    {
-        const QString cleanPath = remotePath.trimmed();
-        if (cleanPath.isEmpty() || cleanPath == "/")
-            return true;
-
-        QString response;
-        return command("CWD " + cleanPath, {250}, &response, error);
-    }
-
-    bool uploadFile(const QString &localPath, const QString &remoteName, QString *error)
-    {
-        QFile file(localPath);
-        if (!file.open(QIODevice::ReadOnly)) {
-            setError(error, QString("Cannot read %1").arg(localPath));
-            return false;
-        }
-
-        QHostAddress dataHost;
-        quint16 dataPort = 0;
-        if (!enterPassiveMode(&dataHost, &dataPort, error))
-            return false;
-
-        QTcpSocket dataSocket;
-        dataSocket.connectToHost(dataHost, dataPort);
-        if (!dataSocket.waitForConnected(kTimeoutMs)) {
-            setError(error, QString("Cannot open FTP data connection (%1)").arg(dataSocket.errorString()));
-            return false;
-        }
-
-        QString response;
-        if (!command("STOR " + remoteName, {125, 150}, &response, error))
-            return false;
-
-        constexpr qint64 kBufSize = 64 * 1024;
-        while (!file.atEnd()) {
-            const QByteArray chunk = file.read(kBufSize);
-            if (chunk.isEmpty() && file.error() != QFile::NoError) {
-                setError(error, QString("Read error in %1").arg(localPath));
-                return false;
-            }
-
-            qint64 written = 0;
-            while (written < chunk.size()) {
-                const qint64 n = dataSocket.write(chunk.constData() + written, chunk.size() - written);
-                if (n < 0 || !dataSocket.waitForBytesWritten(kTimeoutMs)) {
-                    setError(error, QString("FTP data write failed (%1)").arg(dataSocket.errorString()));
-                    return false;
-                }
-                written += n;
-            }
-        }
-
-        dataSocket.disconnectFromHost();
-        if (dataSocket.state() != QAbstractSocket::UnconnectedState)
-            dataSocket.waitForDisconnected(kTimeoutMs);
-
-        return expect({226, 250}, &response, error);
-    }
-
-    void close()
-    {
-        QString response;
-        if (m_control.state() == QAbstractSocket::ConnectedState)
-            command("QUIT", {221}, &response, nullptr);
-    }
-
-private:
-    static constexpr int kTimeoutMs = 15000;
-
-    QTcpSocket m_control;
-    QString m_buffer;
-
-    bool command(const QString &commandText, const QList<int> &expectedCodes, QString *response, QString *error)
-    {
-        const QByteArray bytes = commandText.toUtf8() + "\r\n";
-        if (m_control.write(bytes) != bytes.size() || !m_control.waitForBytesWritten(kTimeoutMs)) {
-            setError(error, QString("FTP command failed: %1").arg(commandText));
-            return false;
-        }
-
-        return expect(expectedCodes, response, error);
-    }
-
-    bool expect(const QList<int> &expectedCodes, QString *response, QString *error)
-    {
-        int code = 0;
-        if (!readResponse(&code, response, error))
-            return false;
-
-        if (!expectedCodes.contains(code)) {
-            setError(error, QString("Unexpected FTP response: %1").arg(response ? *response : QString::number(code)));
-            return false;
-        }
-
-        return true;
-    }
-
-    bool readResponse(int *code, QString *response, QString *error)
-    {
-        QStringList lines;
-        int firstCode = 0;
-        bool multiline = false;
-
-        while (true) {
-            const int newlinePos = m_buffer.indexOf('\n');
-            if (newlinePos < 0) {
-                if (!m_control.waitForReadyRead(kTimeoutMs)) {
-                    setError(error, QString("FTP response timeout (%1)").arg(m_control.errorString()));
-                    return false;
-                }
-                m_buffer += QString::fromUtf8(m_control.readAll());
-                continue;
-            }
-
-            QString line = m_buffer.left(newlinePos);
-            m_buffer.remove(0, newlinePos + 1);
-            line.remove('\r');
-            lines << line;
-
-            const auto match = QRegularExpression("^(\\d{3})([ -]).*").match(line);
-            if (!match.hasMatch()) {
-                if (firstCode == 0)
-                    continue;
-            } else if (firstCode == 0) {
-                firstCode = match.captured(1).toInt();
-                multiline = (match.captured(2) == "-");
-                if (!multiline)
-                    break;
-            } else if (multiline && line.startsWith(QString::number(firstCode) + " ")) {
-                break;
-            }
-        }
-
-        if (code)
-            *code = firstCode;
-        if (response)
-            *response = lines.join('\n');
-        return true;
-    }
-
-    bool enterPassiveMode(QHostAddress *host, quint16 *port, QString *error)
-    {
-        QString response;
-        if (!command("PASV", {227}, &response, error))
-            return false;
-
-        const auto match = QRegularExpression("\\((\\d+),(\\d+),(\\d+),(\\d+),(\\d+),(\\d+)\\)").match(response);
-        if (!match.hasMatch()) {
-            setError(error, "Cannot parse FTP passive response: " + response);
-            return false;
-        }
-
-        const QString hostText = QString("%1.%2.%3.%4")
-            .arg(match.captured(1), match.captured(2), match.captured(3), match.captured(4));
-        const int p1 = match.captured(5).toInt();
-        const int p2 = match.captured(6).toInt();
-
-        *host = QHostAddress(hostText);
-        if (host->isNull() || hostText == "0.0.0.0")
-            *host = m_control.peerAddress();
-        *port = static_cast<quint16>((p1 << 8) + p2);
-        return true;
-    }
-
-    void setError(QString *error, const QString &message) const
-    {
-        if (error)
-            *error = message;
-    }
-};
-
+#include <QTextCursor>
 
 Norma::Norma(QWidget *parent)
     : QMainWindow(parent)
     , m_sourcePanel(nullptr)
     , m_destPanel(nullptr)
+    , m_hd24Panel(nullptr)
     , m_transformBtn(nullptr)
     , m_uploadBtn(nullptr)
     , m_ftpConnectBtn(nullptr)
@@ -243,7 +27,6 @@ Norma::Norma(QWidget *parent)
     , m_ftpHostEdit(nullptr)
     , m_ftpUserEdit(nullptr)
     , m_ftpPasswordEdit(nullptr)
-    , m_ftpRemotePathEdit(nullptr)
     , m_splitter(nullptr)
     , m_log(nullptr)
     , m_ftp(nullptr)
@@ -260,7 +43,7 @@ Norma::~Norma()
 bool Norma::create(const std::string &title)
 {
     setWindowTitle(title.c_str());
-    resize(1024, 640);
+    resize(1280, 640);
 
     auto *central = new QWidget(this);
     setCentralWidget(central);
@@ -272,12 +55,14 @@ bool Norma::create(const std::string &title)
     m_splitter = new QSplitter(Qt::Horizontal, central);
 
     m_sourcePanel = new FilePanel("Source", /*selectable=*/true,  m_splitter);
-    m_destPanel   = new FilePanel("Destination", /*selectable=*/true, m_splitter,
+    m_destPanel   = new FilePanel("Normalized", /*selectable=*/true, m_splitter,
                                   /*allowTrackAssignment=*/false, /*allowCreateFolder=*/true);
+    m_hd24Panel   = new Hd24Panel(m_splitter);
 
     m_splitter->addWidget(m_sourcePanel);
     m_splitter->addWidget(m_destPanel);
-    m_splitter->setSizes({500, 500});
+    m_splitter->addWidget(m_hd24Panel);
+    m_splitter->setSizes({420, 420, 420});
     mainLayout->addWidget(m_splitter, 1);
 
     // ── output log ──
@@ -299,9 +84,6 @@ bool Norma::create(const std::string &title)
     m_ftpPasswordEdit = new QLineEdit("anonymous@", central);
     m_ftpPasswordEdit->setEchoMode(QLineEdit::Password);
 
-    m_ftpRemotePathEdit = new QLineEdit("/", central);
-    m_ftpRemotePathEdit->setPlaceholderText("Remote folder");
-
     m_ftpConnectBtn = new QPushButton("Connect", central);
     m_ftpStatusLabel = new QLabel("Disconnected", central);
 
@@ -312,8 +94,6 @@ bool Norma::create(const std::string &title)
     ftpLayout->addWidget(m_ftpConnectBtn, 0, 4);
     ftpLayout->addWidget(new QLabel("Password", central), 1, 0);
     ftpLayout->addWidget(m_ftpPasswordEdit, 1, 1);
-    ftpLayout->addWidget(new QLabel("Remote path", central), 1, 2);
-    ftpLayout->addWidget(m_ftpRemotePathEdit, 1, 3);
     ftpLayout->addWidget(m_ftpStatusLabel, 1, 4);
     mainLayout->addLayout(ftpLayout);
 
@@ -327,6 +107,7 @@ bool Norma::create(const std::string &title)
     mainLayout->addLayout(buttonLayout);
 
     m_ftp = new FtpClient();
+    m_hd24Panel->setClient(m_ftp);
     loadFtpSettings();
     setFtpConnected(false);
 
@@ -336,6 +117,11 @@ bool Norma::create(const std::string &title)
     connect(m_ftpHostEdit, &QLineEdit::textEdited, this, &Norma::onFtpCredentialsEdited);
     connect(m_ftpUserEdit, &QLineEdit::textEdited, this, &Norma::onFtpCredentialsEdited);
     connect(m_ftpPasswordEdit, &QLineEdit::textEdited, this, &Norma::onFtpCredentialsEdited);
+    connect(m_hd24Panel, &Hd24Panel::statusMessage, this, &Norma::onHd24StatusMessage);
+    connect(m_hd24Panel, &Hd24Panel::pathChanged, this, [this](const QString &path) {
+        m_savedRemotePath = path;
+        saveFtpSettings();
+    });
 
     return true;
 }
@@ -403,7 +189,22 @@ int Norma::deleteJunk(const QString &pathIn, const QString &pathOut)
 void Norma::output(const QString &msg)
 {
     m_log->appendPlainText(msg);
-    QApplication::processEvents();   
+    QApplication::processEvents();
+}
+
+void Norma::outputProgress(const QString &msg)
+{
+    QTextCursor cursor(m_log->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
+    const QString lastLine = cursor.selectedText();
+
+    if (lastLine.startsWith("    ") && lastLine.contains('%'))
+        cursor.insertText(msg);
+    else
+        m_log->appendPlainText(msg);
+
+    QApplication::processEvents();
 }
 
 void Norma::applyTransformation()
@@ -495,7 +296,7 @@ void Norma::loadFtpSettings()
         else if (key == "password")
             m_ftpPasswordEdit->setText(value);
         else if (key == "remote_path")
-            m_ftpRemotePathEdit->setText(value);
+            m_savedRemotePath = value;
     }
 }
 
@@ -508,11 +309,13 @@ void Norma::saveFtpSettings()
         return;
     }
 
+    const QString remotePath = m_hd24Panel ? m_hd24Panel->currentPath() : m_savedRemotePath;
+
     QTextStream out(&file);
     out << "host=" << m_ftpHostEdit->text().trimmed() << '\n';
     out << "user=" << m_ftpUserEdit->text() << '\n';
     out << "password=" << m_ftpPasswordEdit->text() << '\n';
-    out << "remote_path=" << m_ftpRemotePathEdit->text().trimmed() << '\n';
+    out << "remote_path=" << remotePath << '\n';
 }
 
 void Norma::setFtpConnected(bool connected)
@@ -524,6 +327,7 @@ void Norma::setFtpConnected(bool connected)
     m_ftpStatusLabel->setStyleSheet(connected
         ? "color: #1a7f37; font-weight: bold;"
         : "color: #a40e26; font-weight: bold;");
+    m_hd24Panel->setConnected(connected);
 }
 
 void Norma::disconnectFtp()
@@ -539,10 +343,16 @@ void Norma::onFtpCredentialsEdited()
         disconnectFtp();
 }
 
+void Norma::onHd24StatusMessage(const QString &msg)
+{
+    output(msg);
+}
+
 void Norma::connectToFtp()
 {
     if (m_ftpConnected)
     {
+        saveFtpSettings();
         disconnectFtp();
         output("FTP disconnected.");
         return;
@@ -565,7 +375,6 @@ void Norma::connectToFtp()
     QApplication::processEvents();
 
     QString error;
-    m_ftp->disconnectFromServer();
     const bool ok = m_ftp->connectToServer(host, 21, m_ftpUserEdit->text(), m_ftpPasswordEdit->text(), &error);
 
     setEnabled(true);
@@ -579,6 +388,29 @@ void Norma::connectToFtp()
 
     setFtpConnected(true);
     output("Connected.");
+
+    // Restaurar última carpeta remota si existe; si no, listar raíz actual
+    if (!m_savedRemotePath.isEmpty() && m_savedRemotePath != "/")
+    {
+        if (!m_hd24Panel->navigateTo(m_savedRemotePath, &error))
+        {
+            output("Could not open saved path (" + m_savedRemotePath + "): " + error);
+            if (!m_hd24Panel->refresh(&error))
+                output("Browse failed: " + error);
+        }
+        else
+        {
+            output("Opened: " + m_hd24Panel->currentPath());
+        }
+    }
+    else if (!m_hd24Panel->refresh(&error))
+    {
+        output("Browse failed: " + error);
+    }
+    else
+    {
+        output("Browsing: " + m_hd24Panel->currentPath());
+    }
 }
 
 void Norma::uploadSelectedToHd24()
@@ -598,14 +430,14 @@ void Norma::uploadSelectedToHd24()
         return;
     }
 
+    const QString remotePath = m_hd24Panel->currentPath();
     saveFtpSettings();
 
     const QString host = m_ftpHostEdit->text().trimmed();
     m_log->clear();
     output("=== Upload selected to HD24 ===");
     output(QString("FTP host: %1").arg(host));
-    output(QString("Remote path: %1").arg(m_ftpRemotePathEdit->text().trimmed().isEmpty()
-        ? "/" : m_ftpRemotePathEdit->text().trimmed()));
+    output(QString("Remote path: %1").arg(remotePath));
     output(QString("Files: %1").arg(files.size()));
     output("─────────────────────────────────────");
 
@@ -616,7 +448,8 @@ void Norma::uploadSelectedToHd24()
     int nOk = 0;
     int nFail = 0;
 
-    if (!m_ftp->cwd(m_ftpRemotePathEdit->text(), &error)) {
+    // Asegurar que el CWD remoto coincide con el panel HD24
+    if (!m_ftp->cwd(remotePath, &error)) {
         output("Remote path failed: " + error);
         disconnectFtp();
         setEnabled(true);
@@ -626,9 +459,23 @@ void Norma::uploadSelectedToHd24()
     for (const QString &filePath : files)
     {
         const QFileInfo fi(filePath);
-        output(QString("[↑] %1").arg(fi.fileName()));
+        output(QString("[↑] %1  →  %2/%3").arg(fi.fileName(), remotePath, fi.fileName()));
 
-        if (m_ftp->uploadFile(filePath, fi.fileName(), &error)) {
+        int lastPercent = -1;
+        auto progress = [this, &lastPercent](qint64 sent, qint64 total) {
+            const int percent = (total > 0)
+                ? static_cast<int>((sent * 100) / total)
+                : 100;
+            if (percent == lastPercent)
+                return;
+            lastPercent = percent;
+            outputProgress(QString("    %1%  (%2 / %3 KB)")
+                .arg(percent, 3, 10, QChar(' '))
+                .arg(sent / 1024)
+                .arg(total / 1024));
+        };
+
+        if (m_ftp->uploadFile(filePath, fi.fileName(), &error, progress)) {
             const qint64 sizeKB = fi.size() / 1024;
             output(QString("    OK  (%1 KB)").arg(sizeKB));
             ++nOk;
@@ -644,6 +491,14 @@ void Norma::uploadSelectedToHd24()
     }
 
     setEnabled(true);
+
+    // Refrescar el listado remoto para ver los tracks subidos
+    if (m_ftpConnected)
+    {
+        QString refreshError;
+        if (!m_hd24Panel->refresh(&refreshError))
+            output("Refresh failed: " + refreshError);
+    }
 
     output("─────────────────────────────────────");
     output(QString("Upload done: %1 OK, %2 failed.").arg(nOk).arg(nFail));

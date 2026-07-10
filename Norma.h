@@ -12,6 +12,7 @@
 #include <QStringList>
 #include <string>
 #include "FilePanel.h"
+#include "Hd24Panel.h"
 
 class FtpClient;
 
@@ -29,6 +30,7 @@ public:
 
 private:
     void output(const QString &msg);
+    void outputProgress(const QString &msg);
     QString ftpConfigPath() const;
     void loadFtpSettings();
     void saveFtpSettings();
@@ -40,10 +42,12 @@ private slots:
     void connectToFtp();
     void uploadSelectedToHd24();
     void onFtpCredentialsEdited();
+    void onHd24StatusMessage(const QString &msg);
 
 private:
     FilePanel       *m_sourcePanel;
     FilePanel       *m_destPanel;
+    Hd24Panel       *m_hd24Panel;
     QPushButton     *m_transformBtn;
     QPushButton     *m_uploadBtn;
     QPushButton     *m_ftpConnectBtn;
@@ -51,9 +55,9 @@ private:
     QLineEdit       *m_ftpHostEdit;
     QLineEdit       *m_ftpUserEdit;
     QLineEdit       *m_ftpPasswordEdit;
-    QLineEdit       *m_ftpRemotePathEdit;
     QSplitter       *m_splitter;
     QPlainTextEdit  *m_log;
     FtpClient       *m_ftp;
     bool             m_ftpConnected;
+    QString          m_savedRemotePath;
 };
